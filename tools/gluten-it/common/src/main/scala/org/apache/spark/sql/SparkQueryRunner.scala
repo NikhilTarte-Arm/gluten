@@ -23,7 +23,6 @@ import org.apache.spark.{SparkContext, Success, TaskKilled}
 import org.apache.spark.executor.ExecutorMetrics
 import org.apache.spark.scheduler.{SparkListener, SparkListenerExecutorMetricsUpdate, SparkListenerTaskEnd, SparkListenerTaskStart}
 import org.apache.spark.sql.KillTaskListener.INIT_WAIT_TIME_MS
-import org.apache.spark.sql.catalyst.QueryPlanningTracker
 import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -89,22 +88,14 @@ object SparkQueryRunner {
 
     println(s"Executing SQL query from resource path ${query.path}...")
     try {
-      val tracker = new QueryPlanningTracker
       val prev = System.nanoTime()
       val df = spark.sql(query.sql)
-      val rows = QueryPlanningTracker.withTracker(tracker) {
-        df.collect()
-      }
+      val rows = df.collect()
       val totalMillis = (System.nanoTime() - prev) / 1000000L
       if (explain) {
         df.explain(extended = true)
       }
-      val sparkTracker = df.queryExecution.tracker
-      val sparkRulesMillis =
-        sparkTracker.rules.map(_._2.totalTimeNs).sum / 1000000L
-      val otherRulesMillis =
-        tracker.rules.map(_._2.totalTimeNs).sum / 1000000L
-      val planMillis = sparkRulesMillis + otherRulesMillis
+      val planMillis = df.queryExecution.tracker.phases.values.map(_.durationMs).sum
       val collectedExecutorMetrics =
         executorMetrics.map(name => (name, em.getMetricValue(name))).toMap
       val collectedSQLMetrics = collectSQLMetrics(query.path, metricMapper, df.queryExecution)
