@@ -22,7 +22,6 @@ import org.apache.gluten.integration.metrics.{MetricMapper, PlanMetric}
 import org.apache.spark.{SparkContext, Success, TaskKilled}
 import org.apache.spark.executor.ExecutorMetrics
 import org.apache.spark.scheduler.{SparkListener, SparkListenerEvent, SparkListenerExecutorMetricsUpdate, SparkListenerTaskEnd, SparkListenerTaskStart}
-import org.apache.spark.sql.catalyst.QueryPlanningTracker
 import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -97,17 +96,11 @@ object SparkQueryRunner {
 
     println(s"Executing SQL query from resource path ${query.path}...")
     try {
-      val otherTracker = new QueryPlanningTracker
       val df = spark.sql(query.sql)
-      val rows = QueryPlanningTracker.withTracker(otherTracker) {
-        df.collect()
-      }
+      val rows = df.collect()
       if (explain) {
         df.explain(extended = true)
       }
-      // TODO: sparkTracker and otherTracker include planning time information,
-      //  while they are not accurate enough so we paused on using them for now.
-      val sparkTracker = df.queryExecution.tracker
       // This makes sure all the SparkListenerSQLExecutionEnd event is processed before we
       // get the execution time and metrics.
       sc.listenerBus.waitUntilEmpty()
@@ -115,7 +108,8 @@ object SparkQueryRunner {
       val collectedExecutorMetrics =
         executorMetrics.map(name => (name, em.getMetricValue(name))).toMap
       val collectedSQLMetrics = collectSQLMetrics(query.path, metricMapper, df.queryExecution)
-      RunResult(rows, totalMillis, collectedSQLMetrics, collectedExecutorMetrics)
+      val planMillis = df.queryExecution.tracker.phases.values.map(_.durationMs).sum
+      RunResult(rows, planMillis, totalMillis, collectedSQLMetrics, collectedExecutorMetrics)
     } finally {
       sc.removeSparkListener(metricsListener)
       sc.removeSparkListener(executionTimeListener)
@@ -165,6 +159,7 @@ object SparkQueryRunner {
 
 case class RunResult(
     rows: Seq[Row],
+    planningTimeMillis: Long,
     executionTimeMillis: Long,
     sqlMetrics: Seq[PlanMetric],
     executorMetrics: Map[String, Long])
